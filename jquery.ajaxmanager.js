@@ -6,6 +6,17 @@
  * Copyright 2010, Alexander Farkas
  * Dual licensed under the MIT or GPL Version 2 licenses.
  */
+ 
+ /**!
+  * repository-fork: http://github.com/blackbarn/Ajaxmanager
+  * @author Kyle Brown
+  * @version
+  * Modifications:
+  * 1. Added TTL caching support. Default is infinite cache, if you specify a cacheTTL the response will be cached for that period of time (in milliseconds).
+  * 2. Added ability to clear a particular profiles cache (clearCache function). e.g., $J.manageAjax.clearCache('myProfile');
+  * 3. Added queueDuplicateRequests option. This functionality will queue concurrent duplicate requests, but not others. 
+  *    Useful when wishing separate pieces of code to share the same response data (without causing > 1 request) without hindering other async requests.
+  */
 
 (function($){
 	var managed = {},
@@ -106,15 +117,18 @@
 				$(document).clearQueue(this.qName);
 			}
 			
-			if(o.queue){
+			if(o.queue || (o.queueDuplicateRequests && this.requests[xhrID])){
 				$.queue(document, this.qName, ajaxFn);
-				if(this.inProgress < o.maxRequests){
+				if(this.inProgress < o.maxRequests && (!this.requests[xhrID] && o.queueDuplicateRequests)){
 					$.dequeue(document, this.qName);
 				}
 				return xhrID;
 			}
 			return ajaxFn();
 		},
+        clearCache: function () {
+            cache = {};
+        },
 		_createAjax: function(id, o, origSuc, origCom){
 			var that = this;
 			return function(){
@@ -124,11 +138,22 @@
 					$.event.trigger(that.name +'AjaxStart');
 				}
 				if(o.cacheResponse && cache[id]){
-					that.requests[id] = {};
-					setTimeout(function(){
-						that._complete.call(that, o.context || o, origCom, {}, 'success', id, o);
-						that._success.call(that, o.context || o, origSuc, cache[id], 'success', {}, o);
-					}, 0);
+                    if (cache[id].cacheTTL < 0 || ((new Date().getTime() - cache[id].timestamp) < cache[id].cacheTTL)) {
+                        that.requests[id] = {};
+                        setTimeout(function(){
+                            console.log('"%s" response pulled from cache. %o', id, cache[id].data);
+                            that._complete.call(that, o.context || o, origCom, {}, 'success', id, o);
+                            that._success.call(that, o.context || o, origSuc, cache[id].data, 'success', {}, o);
+                        }, 0);
+                    } else {
+                        delete cache[id];
+                        if (o.async) {
+                            that.requests[id] = $.ajax(o);
+                        } else {
+                            $.ajax(o);
+                        }
+                    }
+
 				} else {
 					if (o.async) {
 						that.requests[id] = $.ajax(o);
@@ -140,8 +165,8 @@
 			};
 		},
 		_removeXHR: function(xhrID){
-			if(this.opts.queue){
-				$.dequeue(document, this.qName);
+			if(this.opts.queue || this.opts.queueDuplicateRequests){
+                $.dequeue(document, this.qName);
 			}
 			this.inProgress--;
 			this.requests[xhrID] = null;
@@ -189,7 +214,7 @@
 				});
 			}
 			if(o.cacheResponse && !cache[o.xhrID]){
-				cache[o.xhrID] = data;
+				cache[o.xhrID] = {'cacheTTL': o.cacheTTL, 'data': data, 'timestamp': new Date().getTime()};
 			}
 			origFn.call(context, data, status, xhr, o);
 			$.event.trigger(this.name +'AjaxSuccess', [xhr, o, data]);
@@ -261,9 +286,11 @@
 		abortIsNoSuccess: true,
 		maxRequests: 1,
 		cacheResponse: false,
+        cacheTTL: -1, //time in milliseconds to cache response for. -1 = forever, 1000 = 1 second, etc.
 		domCompleteTrigger: false,
 		domSuccessTrigger: false,
-		preventDoubbleRequests: true,
+		preventDoubbleRequests: false,
+        queueDuplicateRequests: false,
 		queue: false // true, false, clear
 	};
 	
